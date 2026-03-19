@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "photo-match-tool"
+version = "0.1.0"
+description = "Match likely duplicated Apple Photos assets across two libraries or exports."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Open Source Contributors" }
+]
+keywords = ["apple-photos", "icloud-photos", "macos", "photos", "sqlite"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Utilities"
+]
+
+[project.scripts]
+photo-match-tool = "photo_match_tool:main"
+
+[tool.setuptools]
+py-modules = ["photo_match_tool"]
