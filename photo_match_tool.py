@@ -45,6 +45,7 @@ MEDIA_EXTENSIONS = {
 
 CHUNK_SIZE = 1024 * 1024
 VERSION = "0.1.0"
+HASH_PROGRESS_INTERVAL = 250
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,19 @@ class FileRecord:
     extension: str
     size_bytes: int
     sha256: str
+
+    @property
+    def absolute_path(self) -> Path:
+        return Path(self.root) / self.relative_path
+
+
+@dataclass(frozen=True)
+class ExportFileCandidate:
+    root: str
+    relative_path: str
+    filename: str
+    extension: str
+    size_bytes: int
 
     @property
     def absolute_path(self) -> Path:
@@ -102,22 +116,63 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build_manifest(root: Path) -> list[FileRecord]:
-    records: list[FileRecord] = []
+def scan_export_candidates(root: Path) -> list[ExportFileCandidate]:
+    candidates: list[ExportFileCandidate] = []
     for path in iter_media_files(root):
         relative_path = path.relative_to(root).as_posix()
         stat = path.stat()
-        records.append(
-            FileRecord(
+        candidates.append(
+            ExportFileCandidate(
                 root=str(root.resolve()),
                 relative_path=relative_path,
                 filename=path.name,
                 extension=path.suffix.lower(),
                 size_bytes=stat.st_size,
-                sha256=sha256_file(path),
+            )
+        )
+    return candidates
+
+
+def build_manifest_from_candidates(
+    candidates: list[ExportFileCandidate], label: str | None = None
+) -> list[FileRecord]:
+    records: list[FileRecord] = []
+    total = len(candidates)
+    for index, candidate in enumerate(candidates, start=1):
+        if label and (index == 1 or index % HASH_PROGRESS_INTERVAL == 0 or index == total):
+            print(
+                f"[{label}] hashing {index}/{total}: {candidate.relative_path}",
+                file=sys.stderr,
+            )
+        records.append(
+            FileRecord(
+                root=candidate.root,
+                relative_path=candidate.relative_path,
+                filename=candidate.filename,
+                extension=candidate.extension,
+                size_bytes=candidate.size_bytes,
+                sha256=sha256_file(candidate.absolute_path),
             )
         )
     return records
+
+
+def build_manifest(root: Path, label: str | None = None) -> list[FileRecord]:
+    return build_manifest_from_candidates(scan_export_candidates(root), label=label)
+
+
+def candidate_keys(candidates: list[ExportFileCandidate]) -> set[tuple[int, str]]:
+    return {(candidate.size_bytes, candidate.extension) for candidate in candidates}
+
+
+def filter_candidates_for_overlap(
+    candidates: list[ExportFileCandidate], allowed_keys: set[tuple[int, str]]
+) -> list[ExportFileCandidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if (candidate.size_bytes, candidate.extension) in allowed_keys
+    ]
 
 
 def write_manifest_csv(records: list[FileRecord], output_path: Path) -> None:
@@ -826,7 +881,7 @@ def cmd_build_manifest(args: argparse.Namespace) -> int:
     root = Path(args.root).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
     ensure_path_exists(root, "Export folder")
-    records = build_manifest(root)
+    records = build_manifest(root, label=root.name)
     output.parent.mkdir(parents=True, exist_ok=True)
     write_manifest_csv(records, output)
     print(f"Wrote manifest with {len(records)} files to {output}")
@@ -894,8 +949,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
     else:
         source_root = Path(args.source_dir).expanduser().resolve()
         ensure_path_exists(source_root, "Source export folder")
-        source_records = build_manifest(source_root)
-        write_manifest_csv(source_records, out_dir / "source_manifest.csv")
+        source_candidates = scan_export_candidates(source_root)
+        print(
+            f"Scanned {len(source_candidates)} source export files before hashing.",
+            file=sys.stderr,
+        )
 
     if args.target_manifest:
         target_manifest = Path(args.target_manifest).expanduser().resolve()
@@ -904,7 +962,29 @@ def cmd_compare(args: argparse.Namespace) -> int:
     else:
         target_root = Path(args.target_dir).expanduser().resolve()
         ensure_path_exists(target_root, "Target export folder")
-        target_records = build_manifest(target_root)
+        target_candidates = scan_export_candidates(target_root)
+        print(
+            f"Scanned {len(target_candidates)} target export files before hashing.",
+            file=sys.stderr,
+        )
+
+    if not args.source_manifest and not args.target_manifest:
+        overlapping_keys = candidate_keys(source_candidates) & candidate_keys(target_candidates)
+        source_candidates = filter_candidates_for_overlap(source_candidates, overlapping_keys)
+        target_candidates = filter_candidates_for_overlap(target_candidates, overlapping_keys)
+        print(
+            f"Hashing {len(source_candidates)} source and {len(target_candidates)} target files after size/extension prefilter.",
+            file=sys.stderr,
+        )
+        source_records = build_manifest_from_candidates(source_candidates, label="source")
+        target_records = build_manifest_from_candidates(target_candidates, label="target")
+        write_manifest_csv(source_records, out_dir / "source_manifest.csv")
+        write_manifest_csv(target_records, out_dir / "target_manifest.csv")
+    elif not args.source_manifest:
+        source_records = build_manifest_from_candidates(source_candidates, label="source")
+        write_manifest_csv(source_records, out_dir / "source_manifest.csv")
+    elif not args.target_manifest:
+        target_records = build_manifest_from_candidates(target_candidates, label="target")
         write_manifest_csv(target_records, out_dir / "target_manifest.csv")
 
     rows, summary = match_records(source_records, target_records)
